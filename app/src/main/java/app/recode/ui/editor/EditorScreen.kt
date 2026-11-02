@@ -80,9 +80,18 @@ import app.recode.ui.Section
 import app.recode.ui.SwitchRow
 
 @Composable
-fun EditorScreen(uris: List<Uri>, vmKey: String, onBack: () -> Unit, onQueued: (Int) -> Unit) {
+fun EditorScreen(uris: List<Uri>, vmKey: String, onBack: () -> Unit, onQueued: (Int) -> Unit, autoPresets: List<String>? = null) {
     val vm: EditorViewModel = viewModel(key = vmKey)
     LaunchedEffect(uris) { vm.load(uris) }
+    // Test hook (debug builds): queue one job per preset as soon as the file has been read.
+    val ready = vm.canEnqueue
+    LaunchedEffect(ready, autoPresets) {
+        if (autoPresets != null && ready) {
+            var n = 0
+            autoPresets.forEach { id -> vm.presets.firstOrNull { it.id == id }?.let { vm.applyPreset(it); n += vm.enqueue() } }
+            onQueued(n)
+        }
+    }
     var savePreset by remember { mutableStateOf(false) }
 
     val enqueue = {

@@ -25,18 +25,28 @@ import app.recode.ui.editor.EditorScreen
 
 class MainActivity : ComponentActivity() {
     private val shared = mutableStateOf<List<Uri>?>(null)
+    /** Debug builds only: preset ids to queue automatically (used by the CI emulator smoke test). */
+    private val smoke = mutableStateOf<List<String>?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) shared.value = sharedUris(intent)
-        setContent { RecodeTheme { App(shared) } }
+        if (savedInstanceState == null) {
+            shared.value = sharedUris(intent)
+            smoke.value = smokePresets(intent)
+        }
+        setContent { RecodeTheme { App(shared, smoke) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         sharedUris(intent)?.let { shared.value = it }
+        smokePresets(intent)?.let { smoke.value = it }
     }
+
+    private fun smokePresets(intent: Intent?): List<String>? =
+        if (!app.recode.BuildConfig.DEBUG) null
+        else intent?.getStringExtra("smoke_presets")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
 
     /** Files shared to the app from a gallery or file manager. */
     private fun sharedUris(intent: Intent?): List<Uri>? {
@@ -51,7 +61,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun App(shared: MutableState<List<Uri>?>) {
+private fun App(shared: MutableState<List<Uri>?>, smoke: MutableState<List<String>?>) {
     val context = LocalContext.current
     var route by rememberSaveable { mutableStateOf("home") }
     var editorUris by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
@@ -83,8 +93,10 @@ private fun App(shared: MutableState<List<Uri>?>) {
             EditorScreen(
                 uris = editorUris.map(Uri::parse),
                 vmKey = "editor-$session",
+                autoPresets = smoke.value,
                 onBack = { route = "home" },
                 onQueued = { n ->
+                    smoke.value = null
                     Toast.makeText(context, if (n > 1) "已加入 $n 个任务" else "已开始转码，进度见通知栏", Toast.LENGTH_SHORT).show()
                     route = "home"
                 },

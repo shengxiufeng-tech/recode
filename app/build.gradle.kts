@@ -58,7 +58,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     packaging {
         jniLibs { useLegacyPackaging = false }
@@ -106,6 +109,9 @@ dependencies {
 
     // Maintained continuation of FFmpegKit (same com.arthenica.ffmpegkit API). GPL build: x264, x265, etc.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.7")
+    // FFmpegKit's only Java dependency. The maintained fork's POM doesn't declare it, so without this
+    // FFmpegKitConfig fails to initialise at runtime (NoClassDefFoundError) and nothing works.
+    implementation("com.arthenica:smart-exception-java:0.2.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.2.20")
