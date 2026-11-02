@@ -39,6 +39,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,11 +58,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlin.math.ln
+import kotlin.math.roundToInt
 import app.recode.core.AudioEncoder
 import app.recode.core.CommandBuilder
 import app.recode.core.Container
 import app.recode.core.CropAspect
+import app.recode.core.EncoderOptions
 import app.recode.core.Format
+import app.recode.core.FpsMode
 import app.recode.core.MediaInfo
 import app.recode.core.RateControl
 import app.recode.core.Resolution
@@ -332,20 +337,44 @@ private fun VideoSection(vm: EditorViewModel) {
             val preview = vm.preview()
             val fps = if (v.fps > 0) v.fps.toDouble() else src?.fps ?: 30.0
             val auto = if (preview != null && preview.outputWidth > 0) CommandBuilder.autoVideoBitrateKbps(v.encoder.family, preview.outputWidth, preview.outputHeight, fps) else 0
-            val options = listOf(0, 1000, 2000, 3000, 4000, 6000, 8000, 10_000, 12_000, 16_000, 20_000, 25_000, 35_000, 50_000, 80_000)
-            Dropdown(
-                "码率", v.bitrateKbps,
-                options.map { k -> Choice(k, if (k == 0) "自动" + (if (auto > 0) "（约 ${mbps(auto)}）" else "") else mbps(k)) },
-                { k -> vm.video { it.copy(bitrateKbps = k) } },
-            )
+            BitrateSlider(v.bitrateKbps, auto) { k -> vm.video { it.copy(bitrateKbps = k) } }
         } else if (range != null) {
             IntSlider(
                 "画质 (CRF)", v.quality.coerceIn(range), range, { q -> vm.video { it.copy(quality = q) } },
                 hint = "数值越小画质越高、文件越大。推荐 ${v.encoder.defaultQuality} 左右",
             )
         }
-        if (!v.encoder.hardware) {
-            Dropdown("编码速度", v.speed, Speed.entries.map { Choice(it, it.label) }, { sp -> vm.video { it.copy(speed = sp) } })
+        val presets = EncoderOptions.presets(v.encoder)
+        if (presets.isNotEmpty()) {
+            Dropdown(
+                "编码器预设", v.encoderPreset,
+                listOf(Choice("", "跟随速度：${v.speed.label}")) + presets.map { Choice(it.value, it.label) },
+                { p -> vm.video { it.copy(encoderPreset = p) } },
+            )
+            if (v.encoderPreset.isEmpty()) {
+                Dropdown("编码速度", v.speed, Speed.entries.map { Choice(it, it.label) }, { sp -> vm.video { it.copy(speed = sp) } })
+            }
+        }
+        val tunes = EncoderOptions.tunes(v.encoder)
+        val profiles = EncoderOptions.profiles(v.encoder)
+        if (tunes.isNotEmpty() || profiles.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (tunes.isNotEmpty()) Dropdown(
+                    "调优 (tune)", v.tune, listOf(Choice("", "无")) + tunes.map { Choice(it.value, it.label) },
+                    { t -> vm.video { it.copy(tune = t) } }, Modifier.weight(1f),
+                )
+                if (profiles.isNotEmpty()) Dropdown(
+                    "Profile", v.profile, listOf(Choice("", "自动")) + profiles.map { Choice(it.value, it.label) },
+                    { p -> vm.video { it.copy(profile = p) } }, Modifier.weight(1f),
+                )
+            }
+        }
+        val hwModes = EncoderOptions.hwBitrateModes(v.encoder)
+        if (hwModes.isNotEmpty()) {
+            Dropdown(
+                "码率控制", v.hwBitrateMode, listOf(Choice("", "设备默认")) + hwModes.map { Choice(it.value, it.label) },
+                { m -> vm.video { it.copy(hwBitrateMode = m) } },
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Dropdown(
@@ -361,6 +390,21 @@ private fun VideoSection(vm: EditorViewModel) {
                 listOf(0, 24, 25, 30, 50, 60).map { Choice(it, if (it == 0) "保持原始" else "$it fps") },
                 { f -> vm.video { it.copy(fps = f) } }, Modifier.weight(1f),
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Dropdown(
+                "帧率模式", v.fpsMode, FpsMode.entries.map { Choice(it, it.label) },
+                { m -> vm.video { it.copy(fpsMode = m) } }, Modifier.weight(1f),
+            )
+            Dropdown(
+                "关键帧间隔", v.keyframeSec,
+                EncoderOptions.KEYFRAME_SECONDS.map { Choice(it, if (it == 0) (if (v.encoder.hardware) "默认 (2 秒)" else "编码器默认") else "$it 秒") },
+                { k -> vm.video { it.copy(keyframeSec = k) } }, Modifier.weight(1f),
+            )
+        }
+        if (src != null && src.fps > 0 && v.fpsMode == FpsMode.AUTO) {
+            Text("手机录像通常是可变帧率；「自动」按输出格式决定，需要剪辑软件兼容时选恒定帧率。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Dropdown("画面裁剪", v.crop, CropAspect.entries.map { Choice(it, it.label) }, { c -> vm.video { it.copy(crop = c) } })
         Column {
@@ -380,6 +424,35 @@ private fun VideoSection(vm: EditorViewModel) {
         if (src?.isHdr == true) {
             SwitchRow("HDR 转 SDR", v.hdrToSdr, { b -> vm.video { it.copy(hdrToSdr = b) } },
                 subtitle = if (caps.canTonemap) "在普通屏幕和网站上颜色正常" else "此 FFmpeg 不支持色调映射", enabled = caps.canTonemap)
+        }
+    }
+}
+
+/** Video bitrate on a logarithmic slider (300 kbps – 100 Mbps), or automatic. */
+@Composable
+private fun BitrateSlider(valueKbps: Int, autoKbps: Int, onChange: (Int) -> Unit) {
+    val min = 300.0
+    val max = 100_000.0
+    fun toPos(k: Int) = (ln(k.coerceIn(min.toInt(), max.toInt()) / min) / ln(max / min)).toFloat()
+    fun fromPos(p: Float): Int {
+        val k = min * Math.pow(max / min, p.toDouble())
+        val step = when { k < 1000 -> 50.0; k < 10_000 -> 100.0; k < 30_000 -> 500.0; else -> 1000.0 }
+        return ((k / step).roundToInt() * step).toInt()
+    }
+    Column {
+        SwitchRow(
+            "自动码率", valueKbps == 0,
+            { auto -> onChange(if (auto) 0 else autoKbps.takeIf { it > 0 } ?: 6000) },
+            subtitle = if (autoKbps > 0) "按分辨率和帧率估算，约 ${mbps(autoKbps)}" else "按分辨率和帧率估算",
+        )
+        if (valueKbps > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("视频码率", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Text(mbps(valueKbps), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Slider(value = toPos(valueKbps), onValueChange = { onChange(fromPos(it)) })
+            Text("参考：1080p 约 4–8 Mbps，4K 约 15–40 Mbps；HEVC/AV1 可以比 H.264 低 30–50%",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

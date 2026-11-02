@@ -44,6 +44,7 @@ class RealFfmpegTest {
         while (i < args.size) {
             val a = args[i]
             if (a == "-tag:v" && args.getOrNull(i + 1) == "hvc1" && args.any { it.endsWith("_mediacodec") }) { i += 2; continue }
+            if (a == "-bitrate_mode") { i += 2; continue } // MediaCodec-only option
             out += if (a.endsWith("_mediacodec")) "libx264" else a
             i++
         }
@@ -140,6 +141,20 @@ class RealFfmpegTest {
                 else -> null
             }
         }
+        scenarios += Scenario("x264 native preset/tune/profile/cfr/keyframes", sdr, EncodeSettings(video = x264.copy(
+            encoderPreset = "faster", tune = "film", profile = "main", fpsMode = FpsMode.CFR, keyframeSec = 1)), check = vcodec("h264"))
+        scenarios += Scenario("x264 10-bit forces high10", sdr, EncodeSettings(container = Container.MKV,
+            video = x264.copy(tenBit = true, profile = "baseline"))) { m -> if (VideoEncoder.X264 in tenBit && m.video!!.bitDepth != 10) "bit depth ${m.video!!.bitDepth}" else null }
+        scenarios += Scenario("x265 tune grain + vfr", sdr, EncodeSettings(container = Container.MKV,
+            video = VideoSettings(encoder = VideoEncoder.X265, rateControl = RateControl.QUALITY, encoderPreset = "ultrafast", tune = "grain", fpsMode = FpsMode.VFR)), check = vcodec("hevc"))
+        scenarios += Scenario("vp9 realtime cpu-used 7", sdr, EncodeSettings(container = Container.WEBM,
+            video = VideoSettings(encoder = VideoEncoder.VP9, rateControl = RateControl.BITRATE, bitrateKbps = 800, encoderPreset = "7", keyframeSec = 2),
+            audio = AudioSettings(encoder = AudioEncoder.OPUS)), check = vcodec("vp9"))
+        scenarios += Scenario("svt-av1 preset 12", sdr, EncodeSettings(container = Container.MKV,
+            video = VideoSettings(encoder = VideoEncoder.SVT_AV1, rateControl = RateControl.QUALITY, encoderPreset = "12", resolution = Resolution.P360),
+            audio = AudioSettings(encoder = AudioEncoder.OPUS)), check = vcodec("av1"))
+        scenarios += Scenario("hw cbr + 5s keyframes (as x264)", sdr, EncodeSettings(
+            video = VideoSettings(encoder = VideoEncoder.H264_HW, hwBitrateMode = "cbr", keyframeSec = 5, fpsMode = FpsMode.CFR)))
         scenarios += Scenario("opus + loudnorm + 44.1k", sdr, EncodeSettings(container = Container.MKV, video = x264,
             audio = AudioSettings(encoder = AudioEncoder.OPUS, bitrateKbps = 96, normalize = true, sampleRate = 48000))) { m ->
             if (m.audioStreams.size != 2 || m.audioStreams.any { it.codec != "opus" || it.channels > 2 }) "audio ${m.audioStreams}" else null

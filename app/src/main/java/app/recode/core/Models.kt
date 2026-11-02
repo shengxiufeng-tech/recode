@@ -98,6 +98,13 @@ enum class CropAspect(val w: Int, val h: Int, val label: String) {
 
 enum class SubtitleMode(val label: String) { KEEP("保留（自动转换格式）"), DROP("移除") }
 
+/** How output timestamps are produced. Phone recordings are usually variable frame rate. */
+enum class FpsMode(val label: String, val ffValue: String?) {
+    AUTO("自动", null),
+    CFR("恒定帧率 (CFR)", "cfr"),
+    VFR("可变帧率 (VFR)", "vfr"),
+}
+
 data class VideoSettings(
     val encoder: VideoEncoder = VideoEncoder.HEVC_HW,
     val rateControl: RateControl = RateControl.BITRATE,
@@ -114,6 +121,17 @@ data class VideoSettings(
     /** Clockwise rotation in degrees: 0, 90, 180, 270. */
     val rotate: Int = 0,
     val flipHorizontal: Boolean = false,
+    /** Encoder-native preset (x264 "slow", SVT-AV1 "8", …); empty = derived from [speed]. */
+    val encoderPreset: String = "",
+    /** x264/x265 -tune; empty = none. */
+    val tune: String = "",
+    /** x264 -profile:v; empty = encoder default. */
+    val profile: String = "",
+    val fpsMode: FpsMode = FpsMode.AUTO,
+    /** Keyframe interval in seconds; 0 = encoder default (2 s for hardware). */
+    val keyframeSec: Int = 0,
+    /** MediaCodec rate control ("vbr", "cbr", "cq"); empty = device default. */
+    val hwBitrateMode: String = "",
 )
 
 data class AudioSettings(

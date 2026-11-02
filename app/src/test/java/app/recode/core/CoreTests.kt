@@ -215,6 +215,42 @@ class CommandBuilderTest {
     }
 
     @Test
+    fun nativeEncoderOptions() {
+        val s = EncodeSettings(video = VideoSettings(encoder = VideoEncoder.X264, rateControl = RateControl.QUALITY,
+            encoderPreset = "slow", tune = "animation", profile = "high", fpsMode = FpsMode.VFR, keyframeSec = 5))
+        val a = build(mkv, s).args
+        assertEquals("slow", a.valueAfter("-preset"))
+        assertEquals("animation", a.valueAfter("-tune"))
+        assertEquals("high", a.valueAfter("-profile:v"))
+        assertEquals("vfr", a.valueAfter("-fps_mode"))
+        assertEquals("120", a.valueAfter("-g")) // 23.976 fps × 5 s
+        // Unknown values are ignored rather than passed to FFmpeg.
+        val bad = build(mkv, s.copy(video = s.video.copy(encoderPreset = "warp9", tune = "bogus", profile = "main10"))).args
+        assertEquals("fast", bad.valueAfter("-preset"))
+        assertFalse("-tune" in bad)
+        assertFalse("-profile:v" in bad)
+        // 10-bit x264 is forced to High 10.
+        val ten = build(mkv, s.copy(video = s.video.copy(tenBit = true, profile = "baseline"))).args
+        assertEquals("high10", ten.valueAfter("-profile:v"))
+        // VP9 switches deadline with cpu-used.
+        val vp9 = build(mkv, EncodeSettings(container = Container.WEBM, video = VideoSettings(encoder = VideoEncoder.VP9, encoderPreset = "7"), audio = AudioSettings(encoder = AudioEncoder.OPUS))).args
+        assertEquals("realtime", vp9.valueAfter("-deadline"))
+        assertEquals("7", vp9.valueAfter("-cpu-used"))
+        // Hardware rate-control mode.
+        val hw = build(phone, EncodeSettings(video = VideoSettings(encoder = VideoEncoder.HEVC_HW, hwBitrateMode = "cbr"))).args
+        assertEquals("cbr", hw.valueAfter("-bitrate_mode"))
+    }
+
+    @Test
+    fun switchingEncoderResetsNativeOptions() {
+        val s = EncodeSettings(video = VideoSettings(encoder = VideoEncoder.X264, encoderPreset = "slow", tune = "film", profile = "high"))
+        val x265 = SettingsRules.withVideoEncoder(s, VideoEncoder.X265).video
+        assertEquals("slow", x265.encoderPreset) // same preset vocabulary
+        assertEquals("", x265.tune)
+        assertEquals("", SettingsRules.withVideoEncoder(s, VideoEncoder.SVT_AV1).video.encoderPreset)
+    }
+
+    @Test
     fun segmentNormalisation() {
         val n = CommandBuilder.normaliseSegments(
             listOf(TimeRange(5000, 8000), TimeRange(1000, 3000), TimeRange(2500, 4000), TimeRange(9000, 9050)), 10_000,

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -213,15 +214,6 @@ fun TrimPanel(
                         selected = i == sel,
                         onClick = { selected = i; exo.pause(); seek(s.startMs) },
                         label = { Text("${i + 1}. ${Format.timecode(s.startMs)}–${Format.timecode(s.endMs)}") },
-                        trailingIcon = {
-                            Icon(Icons.Filled.Close, "删除片段", Modifier.pointerInput(i) {
-                                detectTapGestures {
-                                    val next = segments.toMutableList().also { it.removeAt(i) }
-                                    selected = (sel - if (i <= sel) 1 else 0).coerceAtLeast(0)
-                                    onSegments(next)
-                                }
-                            })
-                        },
                     )
                 }
                 if (!copyMode) {
@@ -235,6 +227,21 @@ fun TrimPanel(
                         label = { Text("添加片段") },
                         leadingIcon = { Icon(Icons.Filled.Add, null) },
                     )
+                }
+            }
+            // Explicit, full-size buttons: the old chip "×" was too small to hit reliably.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (segments.size > 1) {
+                    OutlinedButton(onClick = {
+                        val next = segments.toMutableList().also { it.removeAt(sel) }
+                        selected = (sel - 1).coerceAtLeast(0)
+                        onSegments(next)
+                    }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Filled.Close, null, Modifier.size(18.dp)); Text(" 删除片段 ${sel + 1}")
+                    }
+                }
+                OutlinedButton(onClick = { selected = 0; onSegments(emptyList()) }, modifier = Modifier.weight(1f)) {
+                    Text("取消剪切（导出完整）")
                 }
             }
             val total = segments.sumOf { it.durationMs }

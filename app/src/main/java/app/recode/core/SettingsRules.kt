@@ -80,8 +80,14 @@ object SettingsRules {
 
     private fun withVideoEncoderOnly(v: VideoSettings, e: VideoEncoder): VideoSettings {
         val sameFamily = v.encoder.qualityRange == e.qualityRange
+        val changed = v.encoder != e
         return v.copy(
             encoder = e,
+            // Native presets/tunes/profiles are encoder-specific names.
+            encoderPreset = if (changed && setOf(v.encoder, e) != setOf(VideoEncoder.X264, VideoEncoder.X265)) "" else v.encoderPreset,
+            tune = if (changed) "" else v.tune,
+            profile = if (changed) "" else v.profile,
+            hwBitrateMode = if (e.hardware) v.hwBitrateMode else "",
             rateControl = if (e.hardware) RateControl.BITRATE else if (v.encoder.hardware) RateControl.QUALITY else v.rateControl,
             quality = if (sameFamily && e.qualityRange?.contains(v.quality) == true) v.quality else e.defaultQuality,
             tenBit = v.tenBit && e.supportsTenBit,

@@ -24,6 +24,12 @@ object Codec {
         "crop" to v.crop.name,
         "rotate" to v.rotate,
         "flipHorizontal" to v.flipHorizontal,
+        "encoderPreset" to v.encoderPreset,
+        "tune" to v.tune,
+        "profile" to v.profile,
+        "fpsMode" to v.fpsMode.name,
+        "keyframeSec" to v.keyframeSec,
+        "hwBitrateMode" to v.hwBitrateMode,
     )
 
     fun video(m: Map<String, Any?>): VideoSettings {
@@ -41,6 +47,12 @@ object Codec {
             crop = enumOf(m.str("crop"), d.crop),
             rotate = m.int("rotate") ?: d.rotate,
             flipHorizontal = m.bool("flipHorizontal") ?: d.flipHorizontal,
+            encoderPreset = m.str("encoderPreset") ?: d.encoderPreset,
+            tune = m.str("tune") ?: d.tune,
+            profile = m.str("profile") ?: d.profile,
+            fpsMode = enumOf(m.str("fpsMode"), d.fpsMode),
+            keyframeSec = m.int("keyframeSec") ?: d.keyframeSec,
+            hwBitrateMode = m.str("hwBitrateMode") ?: d.hwBitrateMode,
         )
     }
 

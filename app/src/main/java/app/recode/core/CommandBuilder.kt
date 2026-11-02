@@ -319,41 +319,44 @@ object CommandBuilder {
         val bitrateMode = usesBitrate(v)
         if (e.hardware && v.rateControl == RateControl.QUALITY) notes += "硬件编码器使用码率模式（${bitrate} kbps）"
 
+        val native = v.encoderPreset.takeIf { p -> EncoderOptions.presets(e).any { it.value == p } }
         when (e) {
             VideoEncoder.H264_HW, VideoEncoder.HEVC_HW, VideoEncoder.AV1_HW -> {
                 a += listOf("-b:v", "${bitrate}k")
-                // Keyframe roughly every 2 seconds.
-                if (fps > 0) a += listOf("-g", (fps * 2).roundToInt().coerceAtLeast(1).toString())
+                if (v.hwBitrateMode in setOf("vbr", "cbr", "cq")) a += listOf("-bitrate_mode", v.hwBitrateMode)
             }
             VideoEncoder.X264 -> {
-                a += listOf("-preset", x26xPreset(v.speed))
+                a += listOf("-preset", native ?: x26xPreset(v.speed))
+                if (EncoderOptions.tunes(e).any { it.value == v.tune }) a += listOf("-tune", v.tune)
+                if (EncoderOptions.profiles(e).any { it.value == v.profile }) {
+                    // 10-bit H.264 needs the High 10 profile.
+                    a += listOf("-profile:v", if (pixFmt == "yuv420p10le") "high10" else v.profile)
+                }
                 a += if (bitrateMode) listOf("-b:v", "${bitrate}k") else listOf("-crf", q)
             }
             VideoEncoder.X265 -> {
-                a += listOf("-preset", x26xPreset(v.speed))
+                a += listOf("-preset", native ?: x26xPreset(v.speed))
+                if (EncoderOptions.tunes(e).any { it.value == v.tune }) a += listOf("-tune", v.tune)
                 a += if (bitrateMode) listOf("-b:v", "${bitrate}k") else listOf("-crf", q)
                 a += listOf("-x265-params", "log-level=error")
             }
             VideoEncoder.VP9 -> {
-                val (deadline, cpu) = when (v.speed) {
-                    Speed.FASTEST -> "realtime" to 8
-                    Speed.FAST -> "good" to 5
-                    Speed.BALANCED -> "good" to 4
-                    Speed.SLOW -> "good" to 2
-                    Speed.SLOWEST -> "good" to 1
+                val cpu = native?.toInt() ?: when (v.speed) {
+                    Speed.FASTEST -> 8; Speed.FAST -> 5; Speed.BALANCED -> 4; Speed.SLOW -> 2; Speed.SLOWEST -> 1
                 }
-                a += listOf("-deadline", deadline, "-cpu-used", cpu.toString(), "-row-mt", "1")
+                // libvpx's "good" deadline accepts cpu-used 0–5; faster settings need "realtime".
+                a += listOf("-deadline", if (cpu > 5) "realtime" else "good", "-cpu-used", cpu.toString(), "-row-mt", "1")
                 a += if (bitrateMode) listOf("-b:v", "${bitrate}k") else listOf("-crf", q, "-b:v", "0")
             }
             VideoEncoder.SVT_AV1 -> {
-                val preset = when (v.speed) {
+                val preset = native?.toInt() ?: when (v.speed) {
                     Speed.FASTEST -> 12; Speed.FAST -> 10; Speed.BALANCED -> 8; Speed.SLOW -> 6; Speed.SLOWEST -> 4
                 }
                 a += listOf("-preset", preset.toString())
                 a += if (bitrateMode) listOf("-b:v", "${bitrate}k") else listOf("-crf", q)
             }
             VideoEncoder.AOM_AV1 -> {
-                val cpu = when (v.speed) {
+                val cpu = native?.toInt() ?: when (v.speed) {
                     Speed.FASTEST -> 8; Speed.FAST -> 7; Speed.BALANCED -> 6; Speed.SLOW -> 5; Speed.SLOWEST -> 4
                 }
                 a += listOf("-cpu-used", cpu.toString(), "-row-mt", "1")
@@ -361,6 +364,10 @@ object CommandBuilder {
             }
             VideoEncoder.COPY, VideoEncoder.NONE -> Unit
         }
+        // Keyframe interval: user choice, else ~2 s for hardware encoders (their defaults vary wildly).
+        val gopSec = if (v.keyframeSec > 0) v.keyframeSec else if (e.hardware) 2 else 0
+        if (gopSec > 0 && fps > 0) a += listOf("-g", (fps * gopSec).roundToInt().coerceAtLeast(1).toString())
+        v.fpsMode.ffValue?.let { a += listOf("-fps_mode", it) }
         if (pixFmt != null) a += listOf("-pix_fmt", pixFmt)
         if (s.container.isMp4Family && e.family == CodecFamily.HEVC) a += listOf("-tag:v", "hvc1")
         return a

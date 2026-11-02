@@ -64,6 +64,9 @@ jobs:
       - name: Build APKs
         run: ./gradlew --no-daemon assembleRelease assembleDebug
 
+      - name: Show merged service declarations
+        run: find app/build/intermediates -path '*merged_manifest*' -name AndroidManifest.xml | head -1 | xargs grep -B1 -A4 'EncodeService\|ProbeService' || true
+
       - name: Collect APKs
         id: apk
         run: |

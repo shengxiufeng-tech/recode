@@ -3,6 +3,7 @@ package app.recode.service
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
@@ -82,12 +83,37 @@ class EncodeService : Service() {
         return START_NOT_STICKY
     }
 
+    @Volatile private var foregroundType: Int? = null
+
+    /**
+     * Promotes the service to a foreground service. Tries the most appropriate type first and falls
+     * back, because OEM builds disagree about which types they accept; never throws — if every type is
+     * refused, the encode still runs as a normal service while the app is open.
+     */
     private fun goForeground() {
-        val type = if (Build.VERSION.SDK_INT >= 35) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
-        else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         val running = graph.controller.currentJobId?.let { graph.jobs.get(it) }
         val n = if (running != null) Notifications.progress(this, running, batchJobs()) else Notifications.preparing(this)
-        ServiceCompat.startForeground(this, Notifications.ID_PROGRESS, n, type)
+        val declared = runCatching {
+            packageManager.getServiceInfo(ComponentName(this, EncodeService::class.java), 0).foregroundServiceType
+        }.getOrDefault(-2)
+        val candidates = buildList {
+            foregroundType?.let { add(it) }
+            if (Build.VERSION.SDK_INT >= 35) add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+            add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST)
+        }.distinct()
+        for (type in candidates) {
+            try {
+                ServiceCompat.startForeground(this, Notifications.ID_PROGRESS, n, type)
+                if (foregroundType != type) AppLog.i(TAG, "foreground ok type=$type (manifest=$declared, sdk=${Build.VERSION.SDK_INT})")
+                foregroundType = type
+                return
+            } catch (e: Exception) {
+                AppLog.w(TAG, "startForeground type=$type refused (manifest=$declared, sdk=${Build.VERSION.SDK_INT})", e)
+            }
+        }
+        AppLog.e(TAG, "could not become a foreground service; continuing in the background")
+        Notifications.update(this, n)
     }
 
     private suspend fun runQueue() {
@@ -258,8 +284,20 @@ class EncodeService : Service() {
     companion object {
         private const val TAG = "EncodeService"
 
+        /**
+         * Starts the queue. From the UI a plain startService() is used, so a refused foreground
+         * promotion can't crash the app ("did not call startForeground"); startForegroundService()
+         * is only the fallback for when the app isn't in the foreground.
+         */
         fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, EncodeService::class.java))
+            val intent = Intent(context, EncodeService::class.java)
+            try {
+                context.startService(intent)
+            } catch (e: IllegalStateException) {
+                AppLog.w(TAG, "startService refused (background), using startForegroundService", e)
+                runCatching { ContextCompat.startForegroundService(context, intent) }
+                    .onFailure { AppLog.e(TAG, "cannot start encoder service", it) }
+            }
         }
     }
 }

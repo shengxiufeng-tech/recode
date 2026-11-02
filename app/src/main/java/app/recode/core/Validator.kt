@@ -122,6 +122,13 @@ object Validator {
                 warn("硬件编码器只支持码率模式，将自动选择码率")
             }
             if (v.encoder == VideoEncoder.AOM_AV1) warn("libaom 在手机上非常慢，建议用 SVT-AV1 或硬件编码")
+            if (v.fpsMode == FpsMode.VFR && v.fps > 0) warn("设置了固定目标帧率，可变帧率模式不会生效")
+            if (v.encoder == VideoEncoder.X264 && v.profile in setOf("baseline", "main") && v.tenBit && caps.supportsTenBit(v.encoder)) {
+                warn("10-bit H.264 需要 High 10 profile，已自动使用 High 10")
+            }
+            if (v.encoderPreset in setOf("veryslow", "slower") || v.encoderPreset in setOf("0", "1", "2") && v.encoder in setOf(VideoEncoder.SVT_AV1, VideoEncoder.AOM_AV1)) {
+                warn("「${v.encoderPreset}」预设在手机上会非常慢")
+            }
             val fpsSrc = src.fps
             if (v.fps > 0 && fpsSrc > 0 && v.fps > fpsSrc + 0.5) warn("目标帧率高于源视频，只会重复帧，不会更流畅")
         }
