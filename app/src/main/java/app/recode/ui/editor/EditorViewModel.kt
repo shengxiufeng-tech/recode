@@ -30,6 +30,7 @@ import app.recode.core.Validator
 import app.recode.core.VideoEncoder
 import app.recode.core.VideoSettings
 import app.recode.data.JobRepository
+import app.recode.diag.AppLog
 import app.recode.service.EncodeService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -85,14 +86,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         settings = Presets.adapt(last ?: Presets.builtIn.first().settings, caps)
         presetId = if (last == null) Presets.builtIn.first().id else lastPreset?.id?.takeIf { lastPreset.settings == last }
 
+        // Don't wait for the capability probe; pick up its result whenever it lands.
         viewModelScope.launch {
-            caps = graph.caps.load()
-            settings = Presets.adapt(settings, caps)
+            graph.caps.caps.collect { c ->
+                if (c != null) {
+                    caps = c
+                    settings = Presets.adapt(settings, c)
+                }
+            }
         }
         sources.indices.forEach { i ->
             viewModelScope.launch {
                 val src = sources[i]
+                AppLog.i("Editor", "probing ${src.name} (${src.uri})")
                 val result = runCatching { withContext(Dispatchers.IO) { graph.engine.probe(src.uri) } }
+                result.exceptionOrNull()?.let { AppLog.w("Editor", "probe failed for ${src.name}", it) }
                 sources[i] = src.copy(
                     media = result.getOrNull(),
                     error = result.exceptionOrNull()?.let { it.message ?: "无法读取此文件" },

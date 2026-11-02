@@ -1,7 +1,7 @@
 package app.recode.data
 
 import android.content.Context
-import android.util.Log
+import app.recode.diag.AppLog
 import app.recode.core.Codec
 import app.recode.core.EncodeSettings
 import app.recode.core.Job
@@ -36,7 +36,7 @@ class JobRepository(dir: File) {
 
     private fun load(): List<Job> {
         val list = runCatching { if (file.exists()) Codec.jobs(file.readText()) else emptyList() }
-            .onFailure { Log.e("JobRepository", "load failed", it) }
+            .onFailure { AppLog.e("JobRepository", "load failed", it) }
             .getOrDefault(emptyList())
         // A job that was running when the process died gets another go.
         return list.map { if (it.status == JobStatus.RUNNING) it.copy(status = JobStatus.QUEUED, progress = 0f) else it }
@@ -47,7 +47,7 @@ class JobRepository(dir: File) {
         if (!force && now - lastSave < 4000) return
         lastSave = now
         runCatching { file.writeAtomically(Codec.jobs(list)) }
-            .onFailure { Log.e("JobRepository", "save failed", it) }
+            .onFailure { AppLog.e("JobRepository", "save failed", it) }
     }
 
     fun get(id: String): Job? = _jobs.value.firstOrNull { it.id == id }

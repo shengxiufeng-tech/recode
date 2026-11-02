@@ -49,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,6 +66,7 @@ import app.recode.RecodeApp
 import app.recode.core.Format
 import app.recode.core.Job
 import app.recode.core.JobStatus
+import app.recode.diag.CrashReporter
 import app.recode.service.EncodeService
 
 @Composable
@@ -75,6 +77,7 @@ fun HomeScreen(onPick: () -> Unit, onSettings: () -> Unit) {
     val sorted = jobs.sortedWith(compareBy<Job> { statusOrder(it.status) }.thenByDescending { if (it.isActive) -it.createdAt else it.finishedAt })
     val running = jobs.any { it.status == JobStatus.RUNNING }
     val queued = jobs.count { it.status == JobStatus.QUEUED }
+    var crash by remember { mutableStateOf(CrashReporter.pending(context)) }
 
     Scaffold(
         topBar = {
@@ -87,7 +90,7 @@ fun HomeScreen(onPick: () -> Unit, onSettings: () -> Unit) {
             ExtendedFloatingActionButton(onClick = onPick, icon = { Icon(Icons.Filled.Add, null) }, text = { Text("添加文件") })
         },
     ) { padding ->
-        if (jobs.isEmpty()) {
+        if (jobs.isEmpty() && crash == null) {
             EmptyState(Modifier.padding(padding), onPick)
             return@Scaffold
         }
@@ -96,6 +99,23 @@ fun HomeScreen(onPick: () -> Unit, onSettings: () -> Unit) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            crash?.let { report ->
+                item {
+                    Card {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Recode 上次异常退出了", style = MaterialTheme.typography.titleSmall)
+                            Text(report.lineSequence().take(3).joinToString("\n").take(300), style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilledTonalButton(onClick = {
+                                    runCatching { context.startActivity(CrashReporter.shareIntent(context, graph.diagnostics())) }
+                                }) { Icon(Icons.Filled.Share, null, Modifier.size(18.dp)); Text(" 分享报告") }
+                                TextButton(onClick = { CrashReporter.dismiss(context); crash = null }) { Text("忽略") }
+                            }
+                        }
+                    }
+                }
+            }
             if (queued > 0 && !running) {
                 item {
                     Card {

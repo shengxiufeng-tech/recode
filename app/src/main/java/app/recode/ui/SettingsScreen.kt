@@ -51,6 +51,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val graph = (context.applicationContext as RecodeApp).graph
     val caps by graph.caps.caps.collectAsState()
+    val status by graph.caps.status.collectAsState()
     val userPresets by graph.presets.user.collectAsState()
     val scope = rememberCoroutineScope()
     var probing by remember { mutableStateOf(false) }
@@ -92,8 +93,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                     if (c == null || probing) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("  正在检测…")
+                            Text("  " + (status ?: "正在检测…"))
                         }
+                        Text("每个编码器最多测试十几秒，卡住的会被自动标记为不可用。", style = MaterialTheme.typography.bodySmall)
                     } else {
                         Text("FFmpeg ${c.ffmpegVersion} · ${Build.MANUFACTURER} ${Build.MODEL} · ${socModel()}", style = MaterialTheme.typography.bodySmall)
                         VideoEncoder.entries.filter { it.reencodes }.forEach { e ->
@@ -106,6 +108,14 @@ fun SettingsScreen(onBack: () -> Unit) {
                         probing = true
                         scope.launch { runCatching { graph.caps.load(force = true) }; probing = false }
                     }, enabled = !probing) { Text("重新检测") }
+                }
+            }
+            item {
+                Section("诊断") {
+                    Text("出问题时，把诊断信息（设备信息、编码能力、任务日志、上次崩溃原因）分享给开发者。不包含视频内容。", style = MaterialTheme.typography.bodyMedium)
+                    FilledTonalButton(onClick = {
+                        runCatching { context.startActivity(app.recode.diag.CrashReporter.shareIntent(context, graph.diagnostics())) }
+                    }) { Text("分享诊断信息") }
                 }
             }
             item {

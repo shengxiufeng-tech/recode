@@ -10,7 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
+import app.recode.diag.AppLog
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import app.recode.RecodeApp
@@ -142,7 +142,7 @@ class EncodeService : Service() {
                     throw IllegalStateException("存储空间可能不足，预计需要约 ${app.recode.core.Format.bytes(estimate * 2)}")
                 }
                 repo.update(job.id) { it.copy(command = built.display(), inputBytes = media.sizeBytes) }
-                Log.i(TAG, built.display())
+                AppLog.i(TAG, "job ${job.id}: ${built.display()}")
 
                 val tracker = ProgressTracker(built.outputDurationMs, SystemClock.elapsedRealtime())
                 var lastUi = 0L
@@ -191,7 +191,7 @@ class EncodeService : Service() {
         } catch (e: CancellationException) {
             withContext(NonCancellable) { markCancelled(job.id) }
         } catch (e: Throwable) {
-            Log.e(TAG, "job ${job.id} failed", e)
+            AppLog.e(TAG, "job ${job.id} failed", e)
             repo.update(job.id) {
                 it.copy(status = JobStatus.FAILED, error = e.message ?: e.javaClass.simpleName, finishedAt = System.currentTimeMillis())
             }
@@ -201,11 +201,11 @@ class EncodeService : Service() {
     }
 
     /** Probes via /proc/self/fd first; falls back to FFmpegKit's SAF bridge for providers that need it. */
-    private fun probeWithFallback(handle: InputHandle, uri: Uri): Pair<MediaInfo, String> =
+    private suspend fun probeWithFallback(handle: InputHandle, uri: Uri): Pair<MediaInfo, String> =
         try {
             graph.engine.probePath(handle.path) to handle.path
         } catch (e: Exception) {
-            Log.w(TAG, "fd probe failed, trying SAF", e)
+            AppLog.w(TAG, "fd probe failed, trying SAF", e)
             val probePath = InputHandle.saf(this, uri).path
             val media = graph.engine.probePath(probePath)
             // SAF parameters are single-use, so the encode gets a fresh one.
@@ -241,7 +241,7 @@ class EncodeService : Service() {
 
     /** Android 15+ caps media-processing foreground services at 6 hours per day. */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        Log.w(TAG, "foreground service timeout")
+        AppLog.w(TAG, "foreground service timeout")
         timedOut = true
         scope.cancel()
         releaseWakeLock()

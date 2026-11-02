@@ -5,7 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
-import android.util.Log
+import app.recode.diag.AppLog
 import app.recode.core.Container
 import java.io.File
 
@@ -32,7 +32,7 @@ object OutputWriter {
             try {
                 return write(context, collection, relPath, source, displayName, container.mime)
             } catch (e: Exception) {
-                Log.w(TAG, "publish to $collection failed", e)
+                AppLog.w(TAG, "publish to $collection failed", e)
                 last = e
             }
         }

@@ -3,19 +3,21 @@ package app.recode.engine
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import app.recode.core.MediaInfo
 import app.recode.core.ProbeParser
+import app.recode.diag.AppLog
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFmpegSessionCompleteCallback
 import com.arthenica.ffmpegkit.FFprobeKit
+import com.arthenica.ffmpegkit.FFprobeSessionCompleteCallback
 import com.arthenica.ffmpegkit.LogCallback
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.StatisticsCallback
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import kotlin.coroutines.resume
 
@@ -47,45 +49,89 @@ class InputHandle private constructor(
     }
 }
 
-data class RunResult(val success: Boolean, val cancelled: Boolean, val returnCode: Int, val log: String)
+data class RunResult(val success: Boolean, val cancelled: Boolean, val returnCode: Int, val log: String, val timedOut: Boolean = false)
 
 data class Stats(val timeMs: Double, val speed: Double, val sizeBytes: Long, val fps: Double)
 
-/** Thin coroutine wrapper around FFmpegKit. */
+/**
+ * Coroutine wrapper around FFmpegKit.
+ *
+ * Every call is asynchronous with a timeout, so a codec that hangs inside native code can never
+ * freeze the app. Short commands (probing, capability checks) are serialised: they are cheap, and
+ * running several FFmpeg/FFprobe instances at once in one process is the riskiest thing FFmpegKit does.
+ */
 class FfmpegEngine(private val context: Context) {
 
+    private val shortLock = Mutex()
+
     init {
-        runCatching { FFmpegKitConfig.setSessionHistorySize(8) }
+        runCatching {
+            FFmpegKitConfig.setSessionHistorySize(16)
+            FFmpegKitConfig.setAsyncConcurrencyLimit(16)
+        }.onFailure { AppLog.e(TAG, "FFmpegKit init failed", it) }
     }
 
-    /** Runs FFmpeg synchronously on the IO dispatcher; for short probe commands. */
-    suspend fun exec(args: List<String>): RunResult = withContext(Dispatchers.IO) {
-        val session = FFmpegKit.executeWithArguments(args.toTypedArray())
-        val rc = session.returnCode
-        RunResult(ReturnCode.isSuccess(rc), ReturnCode.isCancel(rc), rc?.value ?: -1, session.output ?: "")
+    /** Runs a short FFmpeg command and returns its full output. */
+    suspend fun exec(args: List<String>, timeoutMs: Long = 15_000): RunResult = shortLock.withLock {
+        val started = System.currentTimeMillis()
+        var id = -1L
+        val r = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { cont ->
+                val session = FFmpegKit.executeWithArgumentsAsync(
+                    args.toTypedArray(),
+                    FFmpegSessionCompleteCallback { s ->
+                        val rc = s.returnCode
+                        if (cont.isActive) cont.resume(RunResult(ReturnCode.isSuccess(rc), ReturnCode.isCancel(rc), rc?.value ?: -1, s.output ?: ""))
+                    },
+                )
+                id = session.sessionId
+                cont.invokeOnCancellation { FFmpegKit.cancel(session.sessionId) }
+            }
+        }
+        val took = System.currentTimeMillis() - started
+        if (r == null) {
+            AppLog.w(TAG, "timeout after ${took}ms (session $id): ${args.joinToString(" ")}")
+            RunResult(false, false, -1, "timeout", timedOut = true)
+        } else {
+            AppLog.i(TAG, "rc=${r.returnCode} in ${took}ms: ${args.joinToString(" ").take(160)}")
+            r
+        }
     }
 
-    suspend fun probe(uri: Uri): MediaInfo = withContext(Dispatchers.IO) {
+    suspend fun probe(uri: Uri): MediaInfo {
         val first = runCatching { InputHandle.open(context, uri).use { probePath(it.path) } }
-        first.getOrNull() ?: run {
-            Log.w(TAG, "probe via fd failed, retrying with SAF", first.exceptionOrNull())
+        return first.getOrNull() ?: run {
+            AppLog.w(TAG, "probe via fd failed, retrying with SAF", first.exceptionOrNull())
             probePath(InputHandle.saf(context, uri).path)
         }
     }
 
-    fun probePath(path: String): MediaInfo {
-        val session = FFprobeKit.executeWithArguments(
-            arrayOf("-v", "error", "-print_format", "json", "-show_format", "-show_streams", path),
-        )
-        val out = session.output ?: ""
+    suspend fun probePath(path: String, timeoutMs: Long = 30_000): MediaInfo = shortLock.withLock {
+        val started = System.currentTimeMillis()
+        val args = arrayOf("-v", "error", "-print_format", "json", "-show_format", "-show_streams", path)
+        val result = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine<Pair<Boolean, String>> { cont ->
+                val session = FFprobeKit.executeWithArgumentsAsync(
+                    args,
+                    FFprobeSessionCompleteCallback { s ->
+                        if (cont.isActive) cont.resume(ReturnCode.isSuccess(s.returnCode) to (s.output ?: ""))
+                    },
+                )
+                cont.invokeOnCancellation { FFmpegKit.cancel(session.sessionId) }
+            }
+        } ?: throw IllegalStateException("读取媒体信息超时")
+        val (ok, out) = result
+        AppLog.i(TAG, "ffprobe ok=$ok ${out.length} chars in ${System.currentTimeMillis() - started}ms")
         val start = out.indexOf('{')
         val end = out.lastIndexOf('}')
-        if (!ReturnCode.isSuccess(session.returnCode) || start < 0 || end <= start) {
+        if (!ok || start < 0 || end <= start) {
+            AppLog.w(TAG, "ffprobe failed: ${out.takeLast(1000)}")
             throw IllegalStateException(out.lines().lastOrNull { it.isNotBlank() } ?: "无法读取媒体信息")
         }
         val info = ProbeParser.parse(out.substring(start, end + 1))
         if (info.streams.isEmpty()) throw IllegalStateException("文件里没有可识别的音视频流")
-        return info
+        AppLog.i(TAG, "probed: ${info.formatName} ${info.durationMs}ms streams=${info.streams.map { "${it.type}:${it.codec}" }}")
+        info
     }
 
     /**
@@ -100,6 +146,7 @@ class FfmpegEngine(private val context: Context) {
                 FFmpegSessionCompleteCallback { s ->
                     val rc = s.returnCode
                     val log = synchronized(tail) { tail.joinToString("") }
+                    AppLog.i(TAG, "encode finished rc=${rc?.value} in ${s.duration}ms")
                     if (cont.isActive) {
                         cont.resume(RunResult(ReturnCode.isSuccess(rc), ReturnCode.isCancel(rc), rc?.value ?: -1, log))
                     }

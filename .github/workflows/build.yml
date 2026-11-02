@@ -60,7 +60,7 @@ jobs:
           fi
 
       - name: Build APK
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon assembleRelease assembleDebug
 
       - name: Collect APK
         id: apk
@@ -68,6 +68,8 @@ jobs:
           VERSION="0.1.${GITHUB_RUN_NUMBER}"
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/Recode-${VERSION}.apk"
+          # Debuggable build (package app.recode.debug), installs alongside the normal one; for troubleshooting.
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/Recode-${VERSION}-debug.apk"
           ls -la dist
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -84,7 +86,8 @@ jobs:
           name: Recode ${{ steps.apk.outputs.version }}
           body: |
             Automatic build from ${{ github.sha }}.
-            Download the APK below and open it on your phone to install or update.
+            Download Recode-*.apk below and open it on your phone to install or update.
+            The -debug.apk is a debuggable build for troubleshooting (installs separately as "Recode" with package app.recode.debug).
           files: dist/*.apk
           make_latest: true
 
