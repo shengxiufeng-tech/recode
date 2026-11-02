@@ -15,6 +15,10 @@ collect() {
   echo "----- probe.log (tail) -----"; tail -40 "$OUT/probe.log" 2>/dev/null
   echo "----- app.log (tail) -----"; tail -60 "$OUT/app.log" 2>/dev/null
   echo "----- crashes -----"; grep -A25 -E "FATAL EXCEPTION|>>> $PKG" "$OUT/logcat.txt" | head -120
+  echo "----- crash buffer -----"; adb logcat -d -b crash -v threadtime 2>/dev/null | tail -80
+  echo "----- relevant logcat -----"
+  grep -iE "ffmpeg|probe|recode|nativebridge|native_bridge|ndk_translation|houdini|linker|crash_dump|DEBUG  |lowmemorykiller|ActivityManager: (Process|Killing|Start proc)" "$OUT/logcat.txt" | tail -200
+  echo "----- exit info -----"; adb shell dumpsys activity exit-info $PKG 2>/dev/null | head -40
 }
 
 adb shell getprop ro.product.cpu.abilist

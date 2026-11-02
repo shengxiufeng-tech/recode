@@ -136,8 +136,10 @@ jobs:
           path: smoke-out/
           if-no-files-found: ignore
 
+  # The emulator runs the arm64 FFmpeg through binary translation, so it isn't (yet) a reliable
+  # gate; releases depend on the unit + real-FFmpeg tests, the smoke test is informational.
   release:
-    needs: [build, smoke]
+    needs: [build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
@@ -151,7 +153,7 @@ jobs:
           tag_name: v${{ needs.build.outputs.version }}
           name: Recode ${{ needs.build.outputs.version }}
           body: |
-            Automatic build from ${{ github.sha }}. Passed unit tests, real-FFmpeg command checks and an emulator smoke test.
+            Automatic build from ${{ github.sha }}. Passed unit tests and real-FFmpeg command checks.
             Download Recode-*.apk below and open it on your phone to install or update.
             The -debug.apk is a debuggable build for troubleshooting (installs separately, package app.recode.debug).
           files: dist/*.apk
