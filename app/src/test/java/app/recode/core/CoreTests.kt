@@ -141,6 +141,7 @@ class CommandBuilderTest {
         assertEquals("60.000", a.valueAfter("-ss"))
         assertTrue(a.indexOf("-ss") < iIdx)
         assertEquals("30.500", a.valueAfter("-t"))
+        assertEquals(2, a.count { it == "-t" }) // input and output side
         assertEquals("make_zero", a.valueAfter("-avoid_negative_ts"))
         assertEquals("copy", a.valueAfter("-c:v"))
         // cover art (stream 5) is not mapped as the main video

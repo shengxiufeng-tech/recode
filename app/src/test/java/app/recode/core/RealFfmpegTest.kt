@@ -196,7 +196,8 @@ class RealFfmpegTest {
             val res = runCatching { probe(out) }.getOrElse { failures += "${sc.name}: unreadable output: $it"; continue }
             val problems = mutableListOf<String>()
             if (abs(res.durationMs - built.outputDurationMs) > sc.durationTolerance) {
-                problems += "duration ${res.durationMs} != ${built.outputDurationMs}"
+                problems += "duration ${res.durationMs} != ${built.outputDurationMs} (streams: " +
+                    res.streams.joinToString { "${it.type}:${it.codec}=${it.durationMs}" } + ")"
             }
             if (built.outputWidth > 0) {
                 val v = res.video

@@ -179,6 +179,9 @@ object CommandBuilder {
         if (single != null && (!reencodeVideo || !s.audio.encoder.reencodes)) {
             args += listOf("-avoid_negative_ts", "make_zero")
         }
+        // The input-side -t limits what is read, but subtitle events that start inside the range can
+        // still run past its end and stretch the container duration; an output-side -t caps every stream.
+        if (single != null) args += listOf("-t", sec(single.durationMs))
         args += listOf("-max_muxing_queue_size", "4096")
         if (s.container.isMp4Family) args += listOf("-movflags", "+faststart")
         args += listOf("-f", s.container.muxer, req.outputPath)
