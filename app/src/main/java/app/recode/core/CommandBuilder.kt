@@ -181,7 +181,15 @@ object CommandBuilder {
         }
         // The input-side -t limits what is read, but subtitle events that start inside the range can
         // still run past its end and stretch the container duration; an output-side -t caps every stream.
-        if (single != null) args += listOf("-t", sec(single.durationMs))
+        if (single != null) {
+            args += listOf("-t", sec(single.durationMs))
+            // A subtitle event that began before the cut point arrives with a negative timestamp, and
+            // Matroska then shifts *every* stream later to compensate. Output-side -ss 0 drops such
+            // packets; stream-copied audio/video keep their pre-roll so the first GOP stays decodable.
+            args += listOf("-ss", "0")
+            if (wantVideo && !reencodeVideo) args += listOf("-copypriorss:v", "1")
+            if (wantAudio && !s.audio.encoder.reencodes) args += listOf("-copypriorss:a", "1")
+        }
         args += listOf("-max_muxing_queue_size", "4096")
         if (s.container.isMp4Family) args += listOf("-movflags", "+faststart")
         args += listOf("-f", s.container.muxer, req.outputPath)

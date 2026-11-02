@@ -139,6 +139,8 @@ class CommandBuilderTest {
         val a = r.args
         val iIdx = a.indexOf("-i")
         assertEquals("60.000", a.valueAfter("-ss"))
+        assertEquals("0", a[a.lastIndexOf("-ss") + 1])
+        assertEquals("1", a.valueAfter("-copypriorss:v"))
         assertTrue(a.indexOf("-ss") < iIdx)
         assertEquals("30.500", a.valueAfter("-t"))
         assertEquals(2, a.count { it == "-t" }) // input and output side
