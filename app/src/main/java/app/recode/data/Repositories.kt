@@ -38,8 +38,14 @@ class JobRepository(dir: File) {
         val list = runCatching { if (file.exists()) Codec.jobs(file.readText()) else emptyList() }
             .onFailure { AppLog.e("JobRepository", "load failed", it) }
             .getOrDefault(emptyList())
-        // A job that was running when the process died gets another go.
-        return list.map { if (it.status == JobStatus.RUNNING) it.copy(status = JobStatus.QUEUED, progress = 0f) else it }
+        // A job that was running when the process died is not retried automatically: if an encoder
+        // crashed the app, retrying would crash it again. The user can retry or pick another encoder.
+        return list.map {
+            if (it.status == JobStatus.RUNNING) it.copy(
+                status = JobStatus.FAILED, progress = 0f,
+                error = "上次转码时应用意外退出（可能是编码器在此设备上崩溃）。可以重试，或换一个编码器。",
+            ) else it
+        }
     }
 
     private fun persist(list: List<Job>, force: Boolean) {

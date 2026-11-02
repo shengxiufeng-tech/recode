@@ -21,7 +21,7 @@ class AppGraph(app: Application) {
     val presets = PresetRepository(app.filesDir)
     val prefs = Prefs(app)
     val engine = FfmpegEngine(app)
-    val caps = CapabilityRepository(app, engine)
+    val caps = CapabilityRepository(app)
     val controller = EncodeController()
 
     /** Snapshot of app state for the diagnostics file. */
@@ -43,7 +43,10 @@ class RecodeApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLog.init(this)
+        // The capability probe runs in its own ":probe" process; keep that process minimal.
+        val isProbe = Application.getProcessName().endsWith(":probe")
+        AppLog.init(this, if (isProbe) "probe.log" else "app.log")
+        if (isProbe) return
         CrashReporter.install(this)
         AppLog.i("RecodeApp", "start ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} API ${android.os.Build.VERSION.SDK_INT}")
         graph = AppGraph(this)

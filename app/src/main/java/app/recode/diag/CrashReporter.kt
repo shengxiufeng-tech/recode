@@ -86,7 +86,8 @@ object CrashReporter {
             append("\nabi ${Build.SUPPORTED_ABIS.joinToString()}\n\n")
             pending(context)?.let { append("===== 上次异常退出 =====\n").append(it).append("\n\n") }
             append("===== 状态 =====\n").append(extra).append("\n\n")
-            append("===== 应用日志 =====\n").append(AppLog.tail(400_000))
+            append("===== 检测进程日志 =====\n").append(AppLog.tail(100_000, "probe.log")).append("\n\n")
+            append("===== 应用日志 =====\n").append(AppLog.tail(300_000))
         }
         val dir = File(context.cacheDir, "share").apply { mkdirs() }
         val f = File(dir, "recode-diagnostics.txt").apply { writeText(text) }

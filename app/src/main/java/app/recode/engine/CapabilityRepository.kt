@@ -1,15 +1,25 @@
 package app.recode.engine
 
+import android.app.ActivityManager
+import android.app.Service
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.os.IBinder
+import android.os.Process
 import app.recode.core.Capabilities
 import app.recode.core.Codec
 import app.recode.core.ProbePlan
 import app.recode.core.VideoEncoder
 import app.recode.diag.AppLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -17,16 +27,18 @@ import java.io.File
 /**
  * Discovers what this device's FFmpeg can do (once per app version / OS build) and caches it.
  *
- * Each test encode has a timeout, and a marker file is written before it runs: if the process dies
- * during a test (a native crash inside a vendor codec), the next start skips that encoder instead of
- * crashing again.
+ * The test encodes run in a separate process ([ProbeService], ":probe"): a vendor codec that crashes
+ * in native code then only takes down that process. A marker file records which encoder was being
+ * tested, so a restarted probe skips it and marks it unusable.
  */
-class CapabilityRepository(private val context: Context, private val engine: FfmpegEngine) {
+class CapabilityRepository(private val context: Context) {
 
-    private val file = File(context.filesDir, "capabilities.json")
-    private val keyFile = File(context.filesDir, "capabilities.key")
-    private val markerFile = File(context.filesDir, "capabilities.testing")
-    private val badFile = File(context.filesDir, "capabilities.crashed")
+    private val dir = context.filesDir
+    private val file = File(dir, "capabilities.json")
+    private val keyFile = File(dir, "capabilities.key")
+    private val markerFile = File(dir, "capabilities.testing")
+    private val badFile = File(dir, "capabilities.crashed")
+    private val statusFile = File(dir, "capabilities.status")
     private val mutex = Mutex()
     private val _caps = MutableStateFlow<Capabilities?>(null)
     val caps: StateFlow<Capabilities?> = _caps.asStateFlow()
@@ -42,41 +54,93 @@ class CapabilityRepository(private val context: Context, private val engine: Ffm
             val version = runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
             }.getOrDefault(0L)
-            return "$version|${Build.FINGERPRINT}|v3"
+            return "$version|${Build.FINGERPRINT}|v4"
         }
 
+    private fun readCache(): Capabilities? = runCatching {
+        if (keyFile.exists() && keyFile.readText() == cacheKey) Codec.caps(file.readText()) else null
+    }.getOrNull()
+
+    // ---------------------------------------------------------------- main process
+
     suspend fun load(force: Boolean = false): Capabilities = mutex.withLock {
-        if (force) badFile.delete()
         if (!force) {
             _caps.value?.let { return it }
-            val cached = runCatching {
-                if (keyFile.readText() == cacheKey) Codec.caps(file.readText()) else null
-            }.getOrNull()
-            if (cached != null) {
-                _caps.value = cached
-                return cached
-            }
+            readCache()?.let { _caps.value = it; return it }
+        } else {
+            badFile.delete()
         }
-        val probed = try {
-            probe()
-        } catch (e: Throwable) {
-            AppLog.e(TAG, "probe failed", e)
-            // Never leave the app waiting forever: fall back to the encoder list we could get.
-            Capabilities.OPTIMISTIC.copy(ffmpegVersion = "检测失败：${e.javaClass.simpleName}", verified = ProbePlan.TESTED.associateWith { false } + mapOf(VideoEncoder.X264 to true), probedAt = System.currentTimeMillis())
+        val result = try {
+            runProbeProcess()
         } finally {
             _status.value = null
         }
-        _caps.value = probed
-        runCatching {
-            file.writeText(Codec.caps(probed))
-            keyFile.writeText(cacheKey)
-        }
-        probed
+        _caps.value = result
+        result
     }
 
-    private suspend fun probe(): Capabilities {
-        // An encoder that was being tested when the process died last time is treated as broken.
-        val crashed = readCrashed().toMutableSet()
+    private suspend fun runProbeProcess(): Capabilities {
+        file.delete(); keyFile.delete(); statusFile.delete()
+        val started = System.currentTimeMillis()
+        val deadline = started + 4 * 60_000
+        var restarts = 0
+        var deadSince = 0L
+        startProbeService()
+        while (System.currentTimeMillis() < deadline) {
+            delay(400)
+            _status.value = runCatching { statusFile.readText().ifBlank { null } }.getOrNull() ?: "正在启动检测…"
+            readCache()?.let {
+                AppLog.i(TAG, "probe finished in ${System.currentTimeMillis() - started}ms after $restarts restarts")
+                return it
+            }
+            if (probeProcessAlive()) {
+                deadSince = 0
+            } else {
+                val now = System.currentTimeMillis()
+                if (deadSince == 0L) deadSince = now
+                else if (now - deadSince > 3000) {
+                    if (restarts >= 5) break
+                    restarts++
+                    AppLog.w(TAG, "probe process died (marker=${runCatching { markerFile.readText() }.getOrNull()}); restart #$restarts")
+                    startProbeService()
+                    deadSince = 0
+                }
+            }
+        }
+        AppLog.e(TAG, "probe did not finish; using fallback")
+        val bad = readBad()
+        return Capabilities.OPTIMISTIC.copy(
+            ffmpegVersion = "检测未完成",
+            verified = ProbePlan.TESTED.filter { it.hardware || it in bad }.associateWith { false },
+            tenBit = emptySet(),
+            probedAt = System.currentTimeMillis(),
+        )
+    }
+
+    private fun startProbeService() {
+        runCatching { context.startService(Intent(context, ProbeService::class.java)) }
+            .onFailure { AppLog.e(TAG, "cannot start probe service", it) }
+    }
+
+    private fun probeProcessAlive(): Boolean {
+        val am = context.getSystemService(ActivityManager::class.java)
+        val name = context.packageName + ":probe"
+        return am.runningAppProcesses?.any { it.processName == name } == true
+    }
+
+    // ---------------------------------------------------------------- probe process
+
+    private fun setStatus(s: String) {
+        runCatching { statusFile.writeText(s) }
+    }
+
+    private fun readBad(): Set<VideoEncoder> = runCatching {
+        badFile.readLines().mapNotNull { n -> VideoEncoder.entries.firstOrNull { it.name == n.trim() } }.toSet()
+    }.getOrDefault(emptySet())
+
+    /** Runs in the ":probe" process. */
+    suspend fun probeAndSave(engine: FfmpegEngine) {
+        val crashed = readBad().toMutableSet()
         markerFile.takeIf { it.exists() }?.readText()?.trim()?.let { name ->
             VideoEncoder.entries.firstOrNull { it.name == name }?.let {
                 AppLog.w(TAG, "previous probe died while testing $it; marking unusable")
@@ -86,10 +150,9 @@ class CapabilityRepository(private val context: Context, private val engine: Ffm
             markerFile.delete()
         }
 
-        _status.value = "读取 FFmpeg 信息…"
+        setStatus("读取 FFmpeg 信息…")
         val version = Capabilities.parseVersion(engine.exec(ProbePlan.VERSION).log)
-        // If the listing can't be captured for some reason, fall back to assuming a full build
-        // rather than disabling every encoder; real test encodes below still catch missing ones.
+        // If the listing can't be captured, assume a full build; the test encodes still catch gaps.
         val encoders = Capabilities.parseNameTable(engine.exec(ProbePlan.ENCODERS).log)
             .ifEmpty { AppLog.w(TAG, "empty encoder list"); Capabilities.OPTIMISTIC.encoders }
         val filters = Capabilities.parseNameTable(engine.exec(ProbePlan.FILTERS).log)
@@ -100,22 +163,26 @@ class CapabilityRepository(private val context: Context, private val engine: Ffm
         val verified = mutableMapOf<VideoEncoder, Boolean>()
         val tenBit = mutableSetOf<VideoEncoder>()
         if (canVerify) {
-            for (e in ProbePlan.TESTED) {
-                verified[e] = e !in crashed && e.ffName in encoders && test(e, tenBit = false)
+            // Software encoders first: if a hardware codec takes the process down, the restart has less to redo.
+            for (e in ProbePlan.TESTED.sortedBy { it.hardware }) {
+                verified[e] = e !in crashed && e.ffName in encoders && test(engine, e, tenBit = false)
             }
             for (e in ProbePlan.TEN_BIT_CANDIDATES) {
-                if (verified[e] == true && test(e, tenBit = true)) tenBit += e
+                if (verified[e] == true && test(engine, e, tenBit = true)) tenBit += e
             }
         } else {
             AppLog.w(TAG, "control encode failed; trusting the encoder list")
-            crashed.forEach { verified[it] = false }
+            ProbePlan.TESTED.filter { it.hardware || it in crashed }.forEach { verified[it] = false }
         }
         AppLog.i(TAG, "verified=$verified tenBit=$tenBit")
-        return Capabilities(version, encoders, filters, verified, tenBit, System.currentTimeMillis())
+        val caps = Capabilities(version, encoders, filters, verified, tenBit, System.currentTimeMillis())
+        file.writeText(Codec.caps(caps))
+        keyFile.writeText(cacheKey) // written last: its presence means the result is complete
+        setStatus("")
     }
 
-    private suspend fun test(e: VideoEncoder, tenBit: Boolean): Boolean {
-        _status.value = "测试 ${e.label}${if (tenBit) " 10-bit" else ""}…"
+    private suspend fun test(engine: FfmpegEngine, e: VideoEncoder, tenBit: Boolean): Boolean {
+        setStatus("测试 ${e.label}${if (tenBit) " 10-bit" else ""}…")
         markerFile.writeText(e.name)
         return try {
             // Hardware codecs get longer: some take a few seconds to spin up the first time.
@@ -125,11 +192,34 @@ class CapabilityRepository(private val context: Context, private val engine: Ffm
         }
     }
 
-    private fun readCrashed(): Set<VideoEncoder> = runCatching {
-        badFile.readLines().mapNotNull { n -> VideoEncoder.entries.firstOrNull { it.name == n.trim() } }.toSet()
-    }.getOrDefault(emptySet())
-
     companion object {
         private const val TAG = "Capabilities"
+    }
+}
+
+/** Hosts the capability probe in its own process (see manifest: android:process=":probe"). */
+class ProbeService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile private var running = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (running) return START_NOT_STICKY
+        running = true
+        AppLog.i("ProbeService", "starting probe in pid ${Process.myPid()}")
+        scope.launch {
+            try {
+                CapabilityRepository(applicationContext).probeAndSave(FfmpegEngine(applicationContext))
+            } catch (t: Throwable) {
+                AppLog.e("ProbeService", "probe crashed", t)
+            } finally {
+                stopSelf()
+                // Free FFmpeg's native memory and any stuck codec threads.
+                delay(300)
+                Process.killProcess(Process.myPid())
+            }
+        }
+        return START_NOT_STICKY
     }
 }

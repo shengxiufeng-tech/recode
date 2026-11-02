@@ -50,6 +50,12 @@
             android:exported="false"
             android:foregroundServiceType="mediaProcessing|dataSync" />
 
+        <!-- Capability probe runs isolated so a crashing vendor codec can't take the app down. -->
+        <service
+            android:name=".engine.ProbeService"
+            android:exported="false"
+            android:process=":probe" />
+
         <receiver
             android:name=".service.CancelReceiver"
             android:exported="false" />

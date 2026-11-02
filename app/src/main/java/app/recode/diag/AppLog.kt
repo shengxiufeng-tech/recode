@@ -19,9 +19,9 @@ object AppLog {
     private val lock = Any()
     private val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
-    fun init(context: Context) {
+    fun init(context: Context, name: String = "app.log") {
         val dir = File(context.filesDir, "logs").apply { mkdirs() }
-        file = File(dir, "app.log")
+        file = File(dir, name)
     }
 
     val dir: File? get() = file?.parentFile
@@ -40,7 +40,7 @@ object AppLog {
         synchronized(lock) {
             runCatching {
                 if (f.length() > MAX_BYTES) {
-                    val old = File(f.parentFile, "app.log.1")
+                    val old = File(f.parentFile, f.name + ".1")
                     old.delete()
                     f.renameTo(old)
                 }
@@ -50,11 +50,12 @@ object AppLog {
     }
 
     /** The most recent log text, newest last, at most [maxChars] characters. */
-    fun tail(maxChars: Int): String {
-        val f = file ?: return ""
+    fun tail(maxChars: Int, name: String = "app.log"): String {
+        val d = dir ?: return ""
+        val f = File(d, name)
         val text = synchronized(lock) {
-            val old = File(f.parentFile, "app.log.1")
-            (if (old.exists()) old.readText() else "") + (if (f.exists()) f.readText() else "")
+            val old = File(d, "$name.1")
+            runCatching { (if (old.exists()) old.readText() else "") + (if (f.exists()) f.readText() else "") }.getOrDefault("")
         }
         return if (text.length > maxChars) text.takeLast(maxChars) else text
     }
