@@ -1,0 +1,100 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install desktop FFmpeg (used to run every generated command)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | head -1
+
+      - name: Unit tests + real FFmpeg command checks
+        env:
+          FFMPEG_BIN: /usr/bin/ffmpeg
+          FFPROBE_BIN: /usr/bin/ffprobe
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Release signing key (optional)
+        env:
+          KS: ${{ secrets.RECODE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.RECODE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RECODE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.RECODE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "RECODE_KEYSTORE=$RUNNER_TEMP/release.jks"
+              echo "RECODE_KEYSTORE_PASSWORD=$KS_PASS"
+              echo "RECODE_KEY_ALIAS=$KEY_ALIAS"
+              echo "RECODE_KEY_PASSWORD=$KEY_PASS"
+            } >> "$GITHUB_ENV"
+            echo "Using release key from secrets"
+          else
+            echo "No release key secret; release APK is signed with the repo debug key"
+          fi
+
+      - name: Build APK
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Collect APK
+        id: apk
+        run: |
+          VERSION="0.1.${GITHUB_RUN_NUMBER}"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/Recode-${VERSION}.apk"
+          ls -la dist
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Recode-${{ steps.apk.outputs.version }}
+          path: dist/*.apk
+
+      - name: Publish release (main only)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.apk.outputs.version }}
+          name: Recode ${{ steps.apk.outputs.version }}
+          body: |
+            Automatic build from ${{ github.sha }}.
+            Download the APK below and open it on your phone to install or update.
+          files: dist/*.apk
+          make_latest: true
+
+      - name: Lint
+        run: ./gradlew --no-daemon lintDebug
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
