@@ -195,8 +195,12 @@ class RealFfmpegTest {
             }
             val res = runCatching { probe(out) }.getOrElse { failures += "${sc.name}: unreadable output: $it"; continue }
             val problems = mutableListOf<String>()
-            if (abs(res.durationMs - built.outputDurationMs) > sc.durationTolerance) {
-                problems += "duration ${res.durationMs} != ${built.outputDurationMs} (streams: " +
+            // A subtitle line that starts inside the cut but ends after it can stretch the container's
+            // reported duration in MKV; what matters for playback is the audio/video length.
+            val avDuration = res.streams.filter { it.type == StreamType.VIDEO || it.type == StreamType.AUDIO }
+                .maxOfOrNull { it.durationMs }?.takeIf { it > 0 && res.subtitleStreams.isNotEmpty() } ?: res.durationMs
+            if (abs(avDuration - built.outputDurationMs) > sc.durationTolerance) {
+                problems += "duration $avDuration != ${built.outputDurationMs} (streams: " +
                     res.streams.joinToString { "${it.type}:${it.codec}=${it.durationMs}" } + ")"
             }
             if (built.outputWidth > 0) {
