@@ -106,6 +106,11 @@ class RealFfmpegTest {
             val r = exec(ffmpeg, ProbePlan.testEncode(e, false))
             check(r.code == 0) { "probe encode for ${e.ffName} failed: ${r.output.takeLast(800)}" }
         }
+        for (a in ProbePlan.AUDIO_TESTED.filter { it.ffName in encoders }) {
+            val r = exec(ffmpeg, ProbePlan.audioTest(a))
+            check(r.code == 0) { "audio probe for ${a.ffName} failed: ${r.output.takeLast(800)}" }
+        }
+        exec(ffmpeg, ProbePlan.tonemapTest()).let { r -> check(r.code == 0 || "zscale" !in filters) { "tonemap probe failed: ${r.output.takeLast(800)}" } }
         println("encoders: ${VideoEncoder.entries.filter { desktopCaps.isAvailable(it) }}, tenBit=$tenBit, tonemap=${caps.canTonemap}")
 
         val sdrInfo = probe(sdr)

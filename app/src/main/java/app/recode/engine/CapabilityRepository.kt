@@ -151,30 +151,40 @@ class CapabilityRepository(private val context: Context) {
         }
 
         setStatus("读取 FFmpeg 信息…")
-        val version = Capabilities.parseVersion(engine.exec(ProbePlan.VERSION).log)
-        // If the listing can't be captured, assume a full build; the test encodes still catch gaps.
-        val encoders = Capabilities.parseNameTable(engine.exec(ProbePlan.ENCODERS).log)
-            .ifEmpty { AppLog.w(TAG, "empty encoder list"); Capabilities.OPTIMISTIC.encoders }
-        val filters = Capabilities.parseNameTable(engine.exec(ProbePlan.FILTERS).log)
-            .ifEmpty { AppLog.w(TAG, "empty filter list"); Capabilities.OPTIMISTIC.filters }
-        AppLog.i(TAG, "ffmpeg $version, ${encoders.size} encoders, ${filters.size} filters; crashed before=$crashed")
+        // `ffmpeg -version/-encoders/-filters` loop forever in this FFmpegKit build, so everything is
+        // established with tiny real runs instead.
+        val version = runCatching { com.arthenica.ffmpegkit.FFmpegKitConfig.getFFmpegVersion() }.getOrNull() ?: "unknown"
+        AppLog.i(TAG, "ffmpeg $version; crashed before=$crashed")
 
         val canVerify = engine.exec(ProbePlan.controlEncode()).success
+        AppLog.i(TAG, "control encode ok=$canVerify")
         val verified = mutableMapOf<VideoEncoder, Boolean>()
         val tenBit = mutableSetOf<VideoEncoder>()
+        val encoders = mutableSetOf<String>()
+        val filters = mutableSetOf("scale", "crop", "fps", "concat", "loudnorm", "aresample", "transpose", "hflip", "vflip")
         if (canVerify) {
             // Software encoders first: if a hardware codec takes the process down, the restart has less to redo.
             for (e in ProbePlan.TESTED.sortedBy { it.hardware }) {
-                verified[e] = e !in crashed && e.ffName in encoders && test(engine, e, tenBit = false)
+                val ok = e !in crashed && test(engine, e, tenBit = false)
+                verified[e] = ok
+                if (ok) encoders += e.ffName
             }
             for (e in ProbePlan.TEN_BIT_CANDIDATES) {
                 if (verified[e] == true && test(engine, e, tenBit = true)) tenBit += e
             }
+            for (a in ProbePlan.AUDIO_TESTED) {
+                setStatus("测试音频 ${a.label}…")
+                if (engine.exec(ProbePlan.audioTest(a), timeoutMs = 8_000).success) encoders += a.ffName
+            }
+            setStatus("测试 HDR 色调映射…")
+            if (engine.exec(ProbePlan.tonemapTest(), timeoutMs = 8_000).success) filters += setOf("zscale", "tonemap")
         } else {
-            AppLog.w(TAG, "control encode failed; trusting the encoder list")
+            AppLog.w(TAG, "control encode failed; assuming a full build without hardware encoders")
+            encoders += Capabilities.OPTIMISTIC.encoders
+            filters += Capabilities.OPTIMISTIC.filters
             ProbePlan.TESTED.filter { it.hardware || it in crashed }.forEach { verified[it] = false }
         }
-        AppLog.i(TAG, "verified=$verified tenBit=$tenBit")
+        AppLog.i(TAG, "verified=$verified tenBit=$tenBit encoders=$encoders filters=$filters")
         val caps = Capabilities(version, encoders, filters, verified, tenBit, System.currentTimeMillis())
         file.writeText(Codec.caps(caps))
         keyFile.writeText(cacheKey) // written last: its presence means the result is complete

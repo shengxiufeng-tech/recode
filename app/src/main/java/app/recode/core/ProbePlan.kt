@@ -6,6 +6,8 @@ package app.recode.core
  */
 object ProbePlan {
 
+    // NOTE: informational commands (-version, -encoders, -filters) loop forever in the FFmpegKit
+    // 8.1 build used on Android, so the app never runs them; they're only used by desktop tests.
     val ENCODERS = listOf("-hide_banner", "-encoders")
     val FILTERS = listOf("-hide_banner", "-filters")
     val VERSION = listOf("-version")
@@ -18,6 +20,23 @@ object ProbePlan {
     val TEN_BIT_CANDIDATES = listOf(VideoEncoder.X264, VideoEncoder.X265, VideoEncoder.VP9, VideoEncoder.SVT_AV1, VideoEncoder.AOM_AV1)
 
     private val SOURCE = listOf("-f", "lavfi", "-i", "color=c=gray:s=320x240:r=30:d=1")
+
+    /** Audio encoders worth testing; COPY/NONE need no encoder. */
+    val AUDIO_TESTED = AudioEncoder.entries.filter { it.reencodes }
+
+    fun audioTest(e: AudioEncoder): List<String> {
+        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "0.2", "-c:a", e.ffName)
+        if (e.usesBitrate) args += listOf("-b:a", "${e.defaultBitrateKbps}k")
+        args += listOf("-f", "null", "-")
+        return args
+    }
+
+    /** Runs the exact HDR→SDR chain the app uses on a frame tagged as PQ / BT.2020. */
+    fun tonemapTest(): List<String> = listOf(
+        "-hide_banner", "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=1:d=1", "-frames:v", "1",
+        "-vf", (listOf("setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc", "format=yuv420p10le") + CommandBuilder.TONEMAP_CHAIN).joinToString(","),
+        "-f", "null", "-",
+    )
 
     /** A tiny encode with a built-in encoder; if even this fails, the probe cannot verify anything. */
     fun controlEncode(): List<String> =
